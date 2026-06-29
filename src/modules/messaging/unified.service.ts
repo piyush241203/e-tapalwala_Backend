@@ -1,7 +1,7 @@
 import { prisma } from '../../config/database';
 import { MetaWhatsAppService } from './meta.service';
 import { logger } from '../../config/logger';
-import { Channel, Provider } from '../../generated/client';
+import { Channel, Provider } from '@prisma/client';
 import axios from 'axios';
 import FormData from 'form-data';
 import fs from 'fs';

@@ -1,7 +1,7 @@
 import { Response, NextFunction } from 'express';
 import { prisma } from '../../config/database';
 import { AuthRequest } from '../../middlewares/auth.middleware';
-import { Role } from '../../generated/client';
+import { Role } from '@prisma/client';
 import { z } from 'zod';
 
 const createDeptSchema = z.object({

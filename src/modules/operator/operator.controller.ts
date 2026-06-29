@@ -17,7 +17,7 @@ import {
   MessageType,
   MessageStatus,
   BulkOperationStatus,
-} from '../../generated/client';
+} from '@prisma/client';
 
 function parseAndExtractRecipients(csvContent: string): { mobile: string; name?: string }[] {
   const rawRows: string[][] = parse(csvContent, { 

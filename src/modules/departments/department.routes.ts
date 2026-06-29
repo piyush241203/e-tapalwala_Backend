@@ -6,7 +6,7 @@ import {
   updateDepartment,
   deleteDepartment,
 } from './department.controller';
-import { Role } from '../../generated/client';
+import { Role } from '@prisma/client';
 
 export const departmentRouter = Router();
 

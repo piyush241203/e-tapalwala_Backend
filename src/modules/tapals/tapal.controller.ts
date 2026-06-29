@@ -2,7 +2,7 @@ import { Response, NextFunction } from 'express';
 import { prisma } from '../../config/database';
 import { AuthRequest } from '../../middlewares/auth.middleware';
 import { uploadPdfToCloudinary } from '../../config/cloudinary';
-import { Role, TapalType, TapalStatus } from '../../generated/client';
+import { Role, TapalType, TapalStatus } from '@prisma/client';
 import { z } from 'zod';
 
 const createTapalSchema = z.object({

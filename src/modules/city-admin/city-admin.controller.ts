@@ -4,7 +4,7 @@ import { prisma } from '../../config/database';
 import { AuthRequest } from '../../middlewares/auth.middleware';
 import { auditLog } from '../audit/audit.service';
 import { z } from 'zod';
-import { Role, Channel, MessageStatus, BulkOperationStatus } from '../../generated/client';
+import { Role, Channel, MessageStatus, BulkOperationStatus } from '@prisma/client';
 
 const createOperatorSchema = z.object({
   email: z.string().email(),

@@ -9,7 +9,7 @@ import {
   createOfficeSchema, updateOfficeSchema,
   updateWhatsAppCitySettingsSchema,
 } from './super-admin.schema';
-import { Role, Channel, MessageStatus, BulkOperationStatus } from '../../generated/client';
+import { Role, Channel, MessageStatus, BulkOperationStatus } from '@prisma/client';
 import { auditLog } from '../audit/audit.service';
 import PDFDocument from 'pdfkit';
 

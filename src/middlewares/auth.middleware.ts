@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../config/database';
-import { Role } from '../generated/client';
+import { Role } from '@prisma/client';
 
 export interface AuthUser {
   id: string;
