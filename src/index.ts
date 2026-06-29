@@ -15,6 +15,7 @@ import { operatorRouter } from './modules/operator/operator.routes';
 import { webhookRouter } from './modules/webhooks/webhook.routes';
 import { departmentRouter } from './modules/departments/department.routes';
 import { tapalRouter } from './modules/tapals/tapal.routes';
+import { healthRouter } from './modules/health/health.routes';
 import { errorHandler } from './middlewares/error.middleware';
 import { logger } from './config/logger';
 
@@ -71,6 +72,7 @@ app.get('/health', (_req, res) => {
 });
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
+app.use('/api/health', healthRouter);
 app.use('/auth', authLimiter, authRouter);
 app.use('/admin/auth', platformAdminLimiter, platformAdminAuthRouter); // Hidden platform admin portal
 app.use('/super-admin', superAdminRouter);
