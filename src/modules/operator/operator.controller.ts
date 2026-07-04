@@ -727,6 +727,7 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
 
     const document = await prisma.document.findUnique({
       where: { id },
+      select: { id: true, fileUrl: true, originalName: true, mimeType: true, storedName: true },
     });
 
     if (!document) {
@@ -734,27 +735,24 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
       return;
     }
 
-    const localFilePath = path.join(__dirname, '..', '..', '..', 'uploads', document.storedName);
-
-    // Set content headers to view inline in browser
-    res.setHeader('Content-Type', document.mimeType || 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(document.originalName)}"`);
-
-    // 1. Try local file path first
-    if (fs.existsSync(localFilePath)) {
-      const stream = fs.createReadStream(localFilePath);
-      stream.pipe(res);
+    // ── If the file is on Cloudinary (production on Render), redirect directly.
+    // Render has an ephemeral filesystem so local uploads/ are gone after restart.
+    // A direct Cloudinary redirect is faster and more reliable than proxy-streaming.
+    if (document.fileUrl && document.fileUrl.startsWith('http')) {
+      res.redirect(302, document.fileUrl);
       return;
     }
 
-    // 2. Fallback: stream from Cloudinary
-    try {
-      const downloadRes = await axios.get(document.fileUrl, { responseType: 'stream' });
-      downloadRes.data.pipe(res);
-    } catch (downloadErr: any) {
-      logger.error(`Streaming from Cloudinary failed for ${document.fileUrl}: ${downloadErr.message}`);
-      res.status(500).json({ error: 'Failed to retrieve document content' });
+    // ── Fallback: serve from local disk (local dev only) ─────────────────────
+    const localFilePath = path.join(__dirname, '..', '..', '..', 'uploads', document.storedName);
+    if (fs.existsSync(localFilePath)) {
+      res.setHeader('Content-Type', document.mimeType || 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(document.originalName)}"`);
+      fs.createReadStream(localFilePath).pipe(res);
+      return;
     }
+
+    res.status(404).json({ error: 'File not found on disk and no cloud URL available.' });
   } catch (err) {
     next(err);
   }

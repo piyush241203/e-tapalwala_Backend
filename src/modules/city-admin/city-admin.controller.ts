@@ -138,6 +138,23 @@ export const createOperator = async (req: AuthRequest, res: Response, next: Next
     const cityId = req.user!.cityId!;
     const officeId = req.user!.officeId!;
     const body = createOperatorSchema.parse(req.body);
+
+    // ── Duplicate checks ─────────────────────────────────────────────────────
+    const [existingEmail, existingUsername] = await Promise.all([
+      prisma.user.findUnique({ where: { email: body.email }, select: { id: true } }),
+      prisma.user.findUnique({ where: { username: body.username }, select: { id: true } }),
+    ]);
+
+    if (existingEmail) {
+      res.status(409).json({ error: 'This email is already registered. Please use a different email address.' });
+      return;
+    }
+
+    if (existingUsername) {
+      res.status(409).json({ error: `The username "${body.username}" is already taken. Please choose a different username.` });
+      return;
+    }
+
     const passwordHash = await bcrypt.hash(body.password, 12);
 
     const operator = await prisma.user.create({
@@ -387,21 +404,240 @@ export const getReports = async (req: AuthRequest, res: Response, next: NextFunc
     const officeId = req.user!.officeId!;
     const { startDate, endDate } = req.query;
 
-    const where: any = { cityId, operator: { officeId } };
-    if (startDate || endDate) {
-      where.createdAt = {};
-      if (startDate) where.createdAt.gte = new Date(startDate as string);
-      if (endDate) where.createdAt.lte = new Date(endDate as string);
+    // Build date filter
+    const dateFilter: any = {};
+    if (startDate) dateFilter.gte = new Date(startDate as string);
+    if (endDate) {
+      const end = new Date(endDate as string);
+      end.setHours(23, 59, 59, 999);
+      dateFilter.lte = end;
+    }
+    const hasDateFilter = Object.keys(dateFilter).length > 0;
+
+    const singleWhere: any = { cityId, operator: { officeId } };
+    const bulkWhere: any = { cityId, operator: { user: { officeId } } };
+    if (hasDateFilter) {
+      singleWhere.createdAt = dateFilter;
+      bulkWhere.createdAt = dateFilter;
     }
 
-    const [byStatus, byChannel, total] = await Promise.all([
-      prisma.messageLog.groupBy({ by: ['status'], _count: { status: true }, where }),
-      prisma.messageLog.groupBy({ by: ['channel'], _count: { channel: true }, where }),
-      prisma.messageLog.count({ where }),
+    const [
+      byStatus,
+      byChannel,
+      singleTotal,
+      bulkAgg,
+      byStatusBulk,
+      operatorsRaw,
+      singlePerOperator,
+      bulkPerOperator,
+    ] = await Promise.all([
+      // Single message stats
+      prisma.messageLog.groupBy({ by: ['status'], _count: { status: true }, where: singleWhere }),
+      prisma.messageLog.groupBy({ by: ['channel'], _count: { channel: true }, where: singleWhere }),
+      prisma.messageLog.count({ where: singleWhere }),
+
+      // Bulk aggregate totals
+      prisma.bulkOperation.aggregate({
+        _sum: { totalRecipients: true, sentCount: true, failedCount: true, deliveredCount: true },
+        _count: { id: true },
+        where: bulkWhere,
+      }),
+
+      // Bulk by status
+      prisma.bulkOperation.groupBy({ by: ['status'], _count: { id: true }, where: bulkWhere }),
+
+      // Operator list for this office
+      prisma.user.findMany({
+        where: { officeId, cityId, role: { in: ['OPERATOR', 'Clerk', 'Superintendent', 'Officer', 'Admin'] } },
+        select: { id: true, fullName: true, username: true, role: true },
+      }),
+
+      // Single messages per operator
+      prisma.messageLog.groupBy({
+        by: ['operatorId', 'status'],
+        _count: { id: true },
+        where: singleWhere,
+      }),
+
+      // Bulk per operator
+      prisma.bulkOperation.groupBy({
+        by: ['operatorId', 'status'],
+        _sum: { totalRecipients: true, sentCount: true, failedCount: true },
+        _count: { id: true },
+        where: bulkWhere,
+      }),
     ]);
 
-    res.json({ cityId, total, byStatus, byChannel });
+    // Build per-operator stats map
+    const operatorMap: Record<string, any> = {};
+    for (const op of operatorsRaw) {
+      operatorMap[op.id] = {
+        id: op.id,
+        fullName: op.fullName,
+        username: op.username,
+        role: op.role,
+        singleTotal: 0,
+        singleSent: 0,
+        singleFailed: 0,
+        bulkOperations: 0,
+        bulkRecipients: 0,
+        bulkSent: 0,
+        bulkFailed: 0,
+      };
+    }
+
+    for (const row of singlePerOperator) {
+      const op = operatorMap[row.operatorId];
+      if (!op) continue;
+      op.singleTotal += row._count.id;
+      if (row.status === 'SENT' || row.status === 'DELIVERED' || row.status === 'READ') op.singleSent += row._count.id;
+      if (row.status === 'FAILED') op.singleFailed += row._count.id;
+    }
+
+    for (const row of bulkPerOperator) {
+      const op = operatorMap[row.operatorId];
+      if (!op) continue;
+      op.bulkOperations += row._count.id;
+      op.bulkRecipients += row._sum.totalRecipients ?? 0;
+      op.bulkSent += row._sum.sentCount ?? 0;
+      op.bulkFailed += row._sum.failedCount ?? 0;
+    }
+
+    const operatorStats = Object.values(operatorMap);
+
+    // Combined totals
+    const bulkTotalRecipients = bulkAgg._sum.totalRecipients ?? 0;
+    const bulkTotalSent = bulkAgg._sum.sentCount ?? 0;
+    const bulkTotalFailed = bulkAgg._sum.failedCount ?? 0;
+    const bulkCount = bulkAgg._count.id ?? 0;
+
+    res.json({
+      cityId,
+      // Single message stats
+      single: {
+        total: singleTotal,
+        byStatus: byStatus.map(s => ({ status: s.status, count: s._count.status })),
+        byChannel: byChannel.map(c => ({ channel: c.channel, count: c._count.channel })),
+      },
+      // Bulk operation stats
+      bulk: {
+        totalOperations: bulkCount,
+        totalRecipients: bulkTotalRecipients,
+        totalSent: bulkTotalSent,
+        totalFailed: bulkTotalFailed,
+        byStatus: byStatusBulk.map(s => ({ status: s.status, count: s._count.id })),
+      },
+      // Combined
+      combined: {
+        totalMessages: singleTotal + bulkTotalRecipients,
+        totalSent: byStatus.filter(s => ['SENT','DELIVERED','READ'].includes(s.status)).reduce((a, s) => a + s._count.status, 0) + bulkTotalSent,
+        totalFailed: byStatus.filter(s => s.status === 'FAILED').reduce((a, s) => a + s._count.status, 0) + bulkTotalFailed,
+      },
+      // Per-operator breakdown
+      operatorStats,
+    });
   } catch (err) {
     next(err);
   }
 };
+
+// ─── Reports Export (CSV) ─────────────────────────────────────────────────────
+export const exportReports = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const cityId = req.user!.cityId!;
+    const officeId = req.user!.officeId!;
+    const { startDate, endDate, type = 'all' } = req.query;
+
+    const dateFilter: any = {};
+    if (startDate) dateFilter.gte = new Date(startDate as string);
+    if (endDate) {
+      const end = new Date(endDate as string);
+      end.setHours(23, 59, 59, 999);
+      dateFilter.lte = end;
+    }
+    const hasDateFilter = Object.keys(dateFilter).length > 0;
+
+    const escape = (v: any) => {
+      const str = String(v ?? '');
+      return str.includes(',') || str.includes('"') || str.includes('\n')
+        ? `"${str.replace(/"/g, '""')}"`
+        : str;
+    };
+
+    let csvRows: string[] = [];
+
+    if (type === 'single' || type === 'all') {
+      const where: any = { cityId, operator: { officeId } };
+      if (hasDateFilter) where.createdAt = dateFilter;
+
+      const logs = await prisma.messageLog.findMany({
+        where,
+        include: {
+          operator: { select: { fullName: true, username: true } },
+          document: { select: { originalName: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 5000,
+      });
+
+      if (logs.length > 0) {
+        csvRows.push('TYPE,DATE,OPERATOR,RECIPIENT_MOBILE,CHANNEL,STATUS,DOCUMENT,ERROR');
+        for (const log of logs) {
+          csvRows.push([
+            'SINGLE',
+            escape(log.createdAt.toISOString()),
+            escape(log.operator?.fullName ?? ''),
+            escape(log.recipientMobile),
+            escape(log.channel),
+            escape(log.status),
+            escape(log.document?.originalName ?? ''),
+            escape(log.error ?? ''),
+          ].join(','));
+        }
+        csvRows.push('');
+      }
+    }
+
+    if (type === 'bulk' || type === 'all') {
+      const where: any = { cityId, operator: { user: { officeId } } };
+      if (hasDateFilter) where.createdAt = dateFilter;
+
+      const ops = await prisma.bulkOperation.findMany({
+        where,
+        include: {
+          operator: { include: { user: { select: { fullName: true, username: true } } } },
+          document: { select: { originalName: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 1000,
+      });
+
+      if (ops.length > 0) {
+        csvRows.push('TYPE,DATE,OPERATOR,OPERATION_NAME,CHANNEL,STATUS,TOTAL_RECIPIENTS,SENT,DELIVERED,FAILED,DOCUMENT');
+        for (const op of ops) {
+          csvRows.push([
+            'BULK',
+            escape(op.createdAt.toISOString()),
+            escape(op.operator?.user?.fullName ?? ''),
+            escape(op.name),
+            escape(op.channel),
+            escape(op.status),
+            escape(op.totalRecipients),
+            escape(op.sentCount),
+            escape(op.deliveredCount),
+            escape(op.failedCount),
+            escape(op.document?.originalName ?? ''),
+          ].join(','));
+        }
+      }
+    }
+
+    const filename = `report_${type}_${new Date().toISOString().split('T')[0]}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send('\uFEFF' + csvRows.join('\n')); // BOM for Excel UTF-8 compatibility
+  } catch (err) {
+    next(err);
+  }
+};
+
