@@ -765,9 +765,15 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
       }
     }
 
-    // ── 2. If the file is on Cloudinary, stream it inline to avoid redirection issues
-    const isCloudinary = document.fileUrl && document.fileUrl.includes('cloudinary.com');
-    if (isCloudinary) {
+    // ── 2. If it's a remote URL (like Cloudinary), stream it inline
+    const currentHost = process.env.API_URL || 'http://localhost:4000';
+    const isRemoteUrl = document.fileUrl && 
+                        document.fileUrl.startsWith('http') && 
+                        !document.fileUrl.includes('localhost:4000') && 
+                        !document.fileUrl.includes('127.0.0.1') && 
+                        !document.fileUrl.includes(currentHost.replace(/^https?:\/\//, ''));
+
+    if (isRemoteUrl) {
       try {
         const encodedUrl = encodeURI(document.fileUrl);
         const response = await axios({
@@ -782,11 +788,11 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
         response.data.pipe(res);
         return;
       } catch (streamErr) {
-        logger.error('Failed to proxy stream document from Cloudinary', streamErr);
+        logger.error('Failed to proxy stream remote document URL', streamErr);
       }
     }
 
-    res.status(404).json({ error: 'File not found on disk and Cloudinary proxy streaming failed.' });
+    res.status(404).json({ error: 'File not found on disk and remote proxy streaming failed.' });
   } catch (err) {
     next(err);
   }
