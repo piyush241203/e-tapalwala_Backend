@@ -735,12 +735,24 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
       return;
     }
 
-    // ── If the file is on Cloudinary (production on Render), redirect directly.
-    // Render has an ephemeral filesystem so local uploads/ are gone after restart.
-    // A direct Cloudinary redirect is faster and more reliable than proxy-streaming.
+    // ── If the file is on Cloudinary, stream it inline to avoid redirection issues
     if (document.fileUrl && document.fileUrl.startsWith('http')) {
-      res.redirect(302, document.fileUrl);
-      return;
+      try {
+        res.setHeader('Content-Type', document.mimeType || 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(document.originalName)}"`);
+        
+        const response = await axios({
+          method: 'get',
+          url: document.fileUrl,
+          responseType: 'stream'
+        });
+        
+        response.data.pipe(res);
+        return;
+      } catch (streamErr) {
+        logger.error('Failed to proxy stream document from Cloudinary', streamErr);
+        // fall through to local fallback if cloud stream fails
+      }
     }
 
     // ── Fallback: serve from local disk (local dev only) ─────────────────────
@@ -752,7 +764,7 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
       return;
     }
 
-    res.status(404).json({ error: 'File not found on disk and no cloud URL available.' });
+    res.status(404).json({ error: 'File not found on disk and cloud URL failed to stream.' });
   } catch (err) {
     next(err);
   }
