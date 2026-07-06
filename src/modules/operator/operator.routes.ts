@@ -12,7 +12,12 @@ export const operatorRouter = Router();
 // Public route to view documents inline in the browser
 operatorRouter.get('/documents/:id/view', viewDocument);
 
-operatorRouter.use(authenticate, requireRole('OPERATOR', 'Clerk', 'Superintendent', 'Officer'));
+operatorRouter.use(authenticate);
+
+// Publicly accessible bulk operations status for authenticated users (Super Admin, City Admin, Operator)
+operatorRouter.get('/bulk-operations/:id', getBulkOperation);
+
+operatorRouter.use(requireRole('OPERATOR', 'Clerk', 'Superintendent', 'Officer'));
 
 operatorRouter.get('/dashboard', getDashboard);
 
@@ -32,6 +37,3 @@ operatorRouter.post('/csv/preview', upload.single('csv'), previewCsv);
 operatorRouter.get('/messages', getMyLogs);
 operatorRouter.get('/messages/failed', getFailedMessages);
 operatorRouter.post('/messages/:id/retry', retryMessage);
-
-// Bulk operations
-operatorRouter.get('/bulk-operations/:id', getBulkOperation);

@@ -1,7 +1,7 @@
 import { Response, NextFunction } from 'express';
 import { prisma } from '../../config/database';
 import { AuthRequest } from '../../middlewares/auth.middleware';
-import { uploadPdfToCloudinary } from '../../config/cloudinary';
+import { uploadFileToCloudinary } from '../../config/cloudinary';
 import { Role, TapalType, TapalStatus } from '@prisma/client';
 import { z } from 'zod';
 
@@ -140,9 +140,14 @@ export const createTapal = async (req: AuthRequest, res: Response, next: NextFun
     }
 
     const city = await prisma.city.findUniqueOrThrow({ where: { id: cityId } });
+    const office = await prisma.office.findUnique({ where: { id: officeId } });
+
+    const cityName = city.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const officeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]+/g, '_') : 'general';
+    const folderPath = `etapalwala_files/${cityName}/${officeName}/pdfs`;
 
     // Upload to Cloudinary
-    const cloudinaryUrl = await uploadPdfToCloudinary(file.path, file.originalname);
+    const cloudinaryUrl = await uploadFileToCloudinary(file.path, file.originalname, folderPath);
 
     // Generate unique tracking number
     const count = await prisma.tapal.count({ where: { cityId, officeId } });

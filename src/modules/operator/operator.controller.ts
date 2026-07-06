@@ -9,7 +9,7 @@ import { sendMessage } from '../messaging/unified.service';
 import { auditLog } from '../audit/audit.service';
 import { singleSendSchema, bulkSendSchema } from './operator.schema';
 import { logger } from '../../config/logger';
-import { uploadPdfToCloudinary } from '../../config/cloudinary';
+import { uploadFileToCloudinary } from '../../config/cloudinary';
 import {
   Prisma,
   Channel,
@@ -190,7 +190,10 @@ export const sendSingle = async (req: AuthRequest, res: Response, next: NextFunc
     }
 
     // Upload PDF to Cloudinary
-    const cloudinaryUrl = await uploadPdfToCloudinary(file.path, file.originalname);
+    const cityName = city.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const officeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]+/g, '_') : 'general';
+    const folderPath = `etapalwala_files/${cityName}/${officeName}/pdfs`;
+    const cloudinaryUrl = await uploadFileToCloudinary(file.path, file.originalname, folderPath);
 
     // Create document record
     const document = await prisma.document.create({
@@ -353,8 +356,14 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
       }
     }
 
-    // Upload PDF to Cloudinary
-    const cloudinaryUrl = await uploadPdfToCloudinary(pdfFile.path, pdfFile.originalname);
+    // Upload PDF and CSV to Cloudinary
+    const cityName = city.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const officeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]+/g, '_') : 'general';
+    const pdfFolder = `etapalwala_files/${cityName}/${officeName}/pdfs`;
+    const csvFolder = `etapalwala_files/${cityName}/${officeName}/csvs`;
+
+    const cloudinaryUrl = await uploadFileToCloudinary(pdfFile.path, pdfFile.originalname, pdfFolder);
+    const csvCloudinaryUrl = await uploadFileToCloudinary(csvFile.path, csvFile.originalname, csvFolder);
 
     // Create document record
     const document = await prisma.document.create({
@@ -378,7 +387,7 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
         cityId,
         operatorId,
         documentId: document.id,
-        csvFileUrl: getFileUrl(csvFile.filename),
+        csvFileUrl: csvCloudinaryUrl,
         channel: body.channel as Channel,
         provider: body.provider as Provider,
         totalRecipients: recipients.length,
@@ -588,11 +597,21 @@ export const getMyLogs = async (req: AuthRequest, res: Response, next: NextFunct
 export const getBulkOperation = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { id } = req.params;
-    const operatorId = req.user!.id;
+    const { id: userId, role, cityId } = req.user!;
+
+    let whereClause: any = { id };
+    if (role !== 'PLATFORM_ADMIN') {
+      if (role === 'CITY_ADMIN' || role === 'Admin') {
+        whereClause.cityId = cityId;
+      } else {
+        // OPERATOR/Clerk/etc
+        whereClause.operatorId = userId;
+      }
+    }
 
     const bulkOp = await prisma.bulkOperation.findFirst({
-      where: { id, operatorId },
-      include: { document: { select: { originalName: true } } },
+      where: whereClause,
+      include: { document: { select: { id: true, originalName: true } } },
     });
 
     if (!bulkOp) {

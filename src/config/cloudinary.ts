@@ -10,13 +10,15 @@ cloudinary.config({
 });
 
 /**
- * Uploads a local PDF file to Cloudinary and deletes the local file afterward.
+ * Uploads a local file to Cloudinary.
  * @param filePath Local path to the file
  * @param originalName Original name of the file
+ * @param folder Cloudinary folder name
  */
-export async function uploadPdfToCloudinary(
+export async function uploadFileToCloudinary(
   filePath: string,
-  originalName: string
+  originalName: string,
+  folder: string = 'etapalwala_files'
 ): Promise<string> {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
   const apiKey = process.env.CLOUDINARY_API_KEY;
@@ -32,14 +34,13 @@ export async function uploadPdfToCloudinary(
   try {
     const result = await cloudinary.uploader.upload(filePath, {
       resource_type: 'auto',
-      folder: 'etapalwala_pdfs',
+      folder: folder,
       public_id: `${Date.now()}-${originalName.replace(/\.[^/.]+$/, '')}`,
     });
 
-    // Keep local file on disk so the backend can transmit it without downloading from Cloudinary
     return result.secure_url;
   } catch (error) {
-    logger.error('Failed to upload PDF to Cloudinary, using local fallback:', error);
+    logger.error('Failed to upload file to Cloudinary, using local fallback:', error);
     const filename = filePath.split(/[\\/]/).pop();
     const apiUrl = process.env.API_URL || 'http://localhost:4000';
     return `${apiUrl}/uploads/${filename}`;

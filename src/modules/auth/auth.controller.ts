@@ -106,7 +106,13 @@ export const logout = async (req: AuthRequest, res: Response, next: NextFunction
 export const refreshToken = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { refreshToken } = refreshSchema.parse(req.body);
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET!) as { sub: string };
+     let decoded: any;
+    try {
+      decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET!) as { sub: string };
+    } catch (jwtErr) {
+      res.status(401).json({ error: 'Refresh token expired or invalid' });
+      return;
+    }
 
     const user = await prisma.user.findUnique({
       where: { id: decoded.sub },
