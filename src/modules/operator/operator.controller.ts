@@ -763,14 +763,16 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
         const response = await axios({
           method: 'get',
           url: document.fileUrl,
-          responseType: 'stream'
+          responseType: 'stream',
+          timeout: 10000
         });
         
         response.data.pipe(res);
         return;
       } catch (streamErr) {
-        logger.error('Failed to proxy stream document from Cloudinary', streamErr);
-        // fall through to local fallback if cloud stream fails
+        logger.error('Failed to proxy stream document from Cloudinary, redirecting directly', streamErr);
+        res.redirect(document.fileUrl);
+        return;
       }
     }
 
