@@ -42,7 +42,7 @@ export const logsFilterSchema = z.object({
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   page: z.coerce.number().default(1),
-  limit: z.coerce.number().max(100).default(20),
+  limit: z.coerce.number().max(100).default(10),
 });
 
 export const createOfficeSchema = z.object({

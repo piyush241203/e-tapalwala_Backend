@@ -255,7 +255,7 @@ export const getMessages = async (req: AuthRequest, res: Response, next: NextFun
     const cityId = req.user!.cityId!;
     const officeId = req.user!.officeId!;
     const page = parseInt(req.query.page as string || '1');
-    const limit = parseInt(req.query.limit as string || '20');
+    const limit = parseInt(req.query.limit as string || '10');
     const { operatorId, status, channel, startDate, endDate } = req.query;
 
     const singleWhere: any = { 

@@ -506,7 +506,7 @@ export const getMyLogs = async (req: AuthRequest, res: Response, next: NextFunct
   try {
     const operatorId = req.user!.id;
     const page = parseInt(req.query.page as string || '1');
-    const limit = parseInt(req.query.limit as string || '20');
+    const limit = parseInt(req.query.limit as string || '10');
     const { status, channel, search } = req.query;
 
     const singleWhere: any = { 
