@@ -147,7 +147,10 @@ export const createTapal = async (req: AuthRequest, res: Response, next: NextFun
     const folderPath = `etapalwala_files/${cityName}/${officeName}/pdfs`;
 
     // Upload to Cloudinary
-    const cloudinaryUrl = await uploadFileToCloudinary(file.path, file.originalname, folderPath);
+    const cleanOfficeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]/g, '') : 'general';
+    const datetimeStr = new Date().toISOString().replace(/[^0-9]/g, '');
+    const customPublicId = `${cleanOfficeName}tapal${datetimeStr}`;
+    const cloudinaryUrl = await uploadFileToCloudinary(file.path, file.originalname, folderPath, customPublicId);
 
     // Generate unique tracking number
     const count = await prisma.tapal.count({ where: { cityId, officeId } });

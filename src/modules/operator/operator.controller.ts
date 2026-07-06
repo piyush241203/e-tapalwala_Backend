@@ -10,6 +10,7 @@ import { auditLog } from '../audit/audit.service';
 import { singleSendSchema, bulkSendSchema } from './operator.schema';
 import { logger } from '../../config/logger';
 import { uploadFileToCloudinary } from '../../config/cloudinary';
+import { v2 as cloudinary } from 'cloudinary';
 import {
   Prisma,
   Channel,
@@ -193,7 +194,10 @@ export const sendSingle = async (req: AuthRequest, res: Response, next: NextFunc
     const cityName = city.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
     const officeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]+/g, '_') : 'general';
     const folderPath = `etapalwala_files/${cityName}/${officeName}/pdfs`;
-    const cloudinaryUrl = await uploadFileToCloudinary(file.path, file.originalname, folderPath);
+    const cleanOfficeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]/g, '') : 'general';
+    const datetimeStr = new Date().toISOString().replace(/[^0-9]/g, '');
+    const customPublicId = `${cleanOfficeName}${datetimeStr}`;
+    const cloudinaryUrl = await uploadFileToCloudinary(file.path, file.originalname, folderPath, customPublicId);
 
     // Create document record
     const document = await prisma.document.create({
@@ -362,8 +366,13 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
     const pdfFolder = `etapalwala_files/${cityName}/${officeName}/pdfs`;
     const csvFolder = `etapalwala_files/${cityName}/${officeName}/csvs`;
 
-    const cloudinaryUrl = await uploadFileToCloudinary(pdfFile.path, pdfFile.originalname, pdfFolder);
-    const csvCloudinaryUrl = await uploadFileToCloudinary(csvFile.path, csvFile.originalname, csvFolder);
+    const cleanOfficeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]/g, '') : 'general';
+    const datetimeStr = new Date().toISOString().replace(/[^0-9]/g, '');
+    const customPdfId = `${cleanOfficeName}pdf${datetimeStr}`;
+    const customCsvId = `${cleanOfficeName}csv${datetimeStr}`;
+
+    const cloudinaryUrl = await uploadFileToCloudinary(pdfFile.path, pdfFile.originalname, pdfFolder, customPdfId);
+    const csvCloudinaryUrl = await uploadFileToCloudinary(csvFile.path, csvFile.originalname, csvFolder, customCsvId);
 
     // Create document record
     const document = await prisma.document.create({
@@ -611,7 +620,7 @@ export const getBulkOperation = async (req: AuthRequest, res: Response, next: Ne
 
     const bulkOp = await prisma.bulkOperation.findFirst({
       where: whereClause,
-      include: { document: { select: { id: true, originalName: true } } },
+      include: { document: { select: { id: true, originalName: true, fileUrl: true } } },
     });
 
     if (!bulkOp) {
@@ -759,7 +768,7 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
       const localFilePath = path.join(__dirname, '..', '..', '..', 'uploads', document.storedName);
       if (fs.existsSync(localFilePath)) {
         res.setHeader('Content-Type', document.mimeType || 'application/pdf');
-        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(document.originalName)}"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(document.originalName)}"`);
         fs.createReadStream(localFilePath).pipe(res);
         return;
       }
@@ -775,7 +784,29 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
 
     if (isRemoteUrl) {
       try {
-        const encodedUrl = encodeURI(document.fileUrl);
+        let downloadUrl = document.fileUrl;
+        
+        // If it is a Cloudinary URL, generate a signed URL to bypass "untrusted customer" security blocks
+        if (document.fileUrl.includes('cloudinary.com')) {
+          const parts = document.fileUrl.split('/upload/');
+          if (parts.length >= 2) {
+            const pathParts = parts[1].split('/');
+            // Remove version number (e.g. v1783369415)
+            if (pathParts[0].startsWith('v') && !isNaN(Number(pathParts[0].substring(1)))) {
+              pathParts.shift();
+            }
+            const publicIdWithExt = pathParts.join('/');
+            const publicId = publicIdWithExt.substring(0, publicIdWithExt.lastIndexOf('.'));
+            
+            downloadUrl = cloudinary.url(publicId, {
+              sign_url: true,
+              secure: true,
+              resource_type: document.mimeType === 'application/pdf' ? 'image' : 'raw'
+            });
+          }
+        }
+
+        const encodedUrl = encodeURI(downloadUrl);
         const response = await axios({
           method: 'get',
           url: encodedUrl,
@@ -784,7 +815,7 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
         });
         
         res.setHeader('Content-Type', document.mimeType || 'application/pdf');
-        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(document.originalName)}"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(document.originalName)}"`);
         response.data.pipe(res);
         return;
       } catch (streamErr) {

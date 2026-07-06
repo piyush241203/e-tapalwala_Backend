@@ -18,7 +18,8 @@ cloudinary.config({
 export async function uploadFileToCloudinary(
   filePath: string,
   originalName: string,
-  folder: string = 'etapalwala_files'
+  folder: string = 'etapalwala_files',
+  customPublicId?: string
 ): Promise<string> {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
   const apiKey = process.env.CLOUDINARY_API_KEY;
@@ -32,10 +33,18 @@ export async function uploadFileToCloudinary(
   }
 
   try {
+    const ext = originalName.substring(originalName.lastIndexOf('.')).toLowerCase();
+    const cleanOriginalName = originalName.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9]/g, '');
+    const basePublicId = customPublicId || `${Date.now()}${cleanOriginalName}`;
+    
+    const isPdf = ext === '.pdf';
+    const finalPublicId = isPdf ? basePublicId : `${basePublicId}${ext}`;
+
     const result = await cloudinary.uploader.upload(filePath, {
-      resource_type: 'auto',
+      resource_type: isPdf ? 'image' : 'raw',
       folder: folder,
-      public_id: `${Date.now()}-${originalName.replace(/\.[^/.]+$/, '')}`,
+      public_id: finalPublicId,
+      sign_url: true,
     });
 
     return result.secure_url;
