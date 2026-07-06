@@ -769,26 +769,24 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
     const isCloudinary = document.fileUrl && document.fileUrl.includes('cloudinary.com');
     if (isCloudinary) {
       try {
-        res.setHeader('Content-Type', document.mimeType || 'application/pdf');
-        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(document.originalName)}"`);
-        
+        const encodedUrl = encodeURI(document.fileUrl);
         const response = await axios({
           method: 'get',
-          url: document.fileUrl,
+          url: encodedUrl,
           responseType: 'stream',
-          timeout: 10000
+          timeout: 15000
         });
         
+        res.setHeader('Content-Type', document.mimeType || 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(document.originalName)}"`);
         response.data.pipe(res);
         return;
       } catch (streamErr) {
-        logger.error('Failed to proxy stream document from Cloudinary, redirecting directly', streamErr);
-        res.redirect(document.fileUrl);
-        return;
+        logger.error('Failed to proxy stream document from Cloudinary', streamErr);
       }
     }
 
-    res.status(404).json({ error: 'File not found on disk and Cloudinary URL is not available.' });
+    res.status(404).json({ error: 'File not found on disk and Cloudinary proxy streaming failed.' });
   } catch (err) {
     next(err);
   }
