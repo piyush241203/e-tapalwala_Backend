@@ -754,8 +754,20 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
       return;
     }
 
-    // ── If the file is on Cloudinary, stream it inline to avoid redirection issues
-    if (document.fileUrl && document.fileUrl.startsWith('http')) {
+    // ── 1. If it's a local file and exists on disk, serve it directly ────────
+    if (document.storedName) {
+      const localFilePath = path.join(__dirname, '..', '..', '..', 'uploads', document.storedName);
+      if (fs.existsSync(localFilePath)) {
+        res.setHeader('Content-Type', document.mimeType || 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(document.originalName)}"`);
+        fs.createReadStream(localFilePath).pipe(res);
+        return;
+      }
+    }
+
+    // ── 2. If the file is on Cloudinary, stream it inline to avoid redirection issues
+    const isCloudinary = document.fileUrl && document.fileUrl.includes('cloudinary.com');
+    if (isCloudinary) {
       try {
         res.setHeader('Content-Type', document.mimeType || 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(document.originalName)}"`);
@@ -776,16 +788,7 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
       }
     }
 
-    // ── Fallback: serve from local disk (local dev only) ─────────────────────
-    const localFilePath = path.join(__dirname, '..', '..', '..', 'uploads', document.storedName);
-    if (fs.existsSync(localFilePath)) {
-      res.setHeader('Content-Type', document.mimeType || 'application/pdf');
-      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(document.originalName)}"`);
-      fs.createReadStream(localFilePath).pipe(res);
-      return;
-    }
-
-    res.status(404).json({ error: 'File not found on disk and cloud URL failed to stream.' });
+    res.status(404).json({ error: 'File not found on disk and Cloudinary URL is not available.' });
   } catch (err) {
     next(err);
   }
