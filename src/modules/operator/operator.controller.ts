@@ -763,6 +763,8 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
       return;
     }
 
+    logger.info(`viewDocument: id=${id}, fileUrl=${document.fileUrl}, storedName=${document.storedName}`);
+
     // ── 1. If it's a local file and exists on disk, serve it directly ────────
     if (document.storedName) {
       const localFilePath = path.join(__dirname, '..', '..', '..', 'uploads', document.storedName);
@@ -783,9 +785,8 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
                         !document.fileUrl.includes(currentHost.replace(/^https?:\/\//, ''));
 
     if (isRemoteUrl) {
+      let downloadUrl = document.fileUrl;
       try {
-        let downloadUrl = document.fileUrl;
-        
         // If it is a Cloudinary URL, generate a signed URL to bypass "untrusted customer" security blocks
         if (document.fileUrl.includes('cloudinary.com')) {
           const parts = document.fileUrl.split('/upload/');
@@ -806,6 +807,7 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
           }
         }
 
+        logger.info(`viewDocument: Streaming from remote URL: ${downloadUrl}`);
         const encodedUrl = encodeURI(downloadUrl);
         const response = await axios({
           method: 'get',
@@ -818,8 +820,8 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
         res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(document.originalName)}"`);
         response.data.pipe(res);
         return;
-      } catch (streamErr) {
-        logger.error('Failed to proxy stream remote document URL', streamErr);
+      } catch (streamErr: any) {
+        logger.error(`Failed to proxy stream remote document URL. URL attempted: ${downloadUrl}. Error: ${streamErr.message}`, streamErr);
       }
     }
 
