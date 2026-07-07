@@ -6,6 +6,7 @@ import axios from 'axios';
 import FormData from 'form-data';
 import fs from 'fs';
 import path from 'path';
+import { v2 as cloudinary } from 'cloudinary';
 
 export interface SendMessageOptions {
   messageLogId: string;
@@ -168,13 +169,32 @@ async function sendViaMeta(opts: SendMessageOptions, settings: any) {
   // Fallback to HTTP download
   if (!stream) {
     let docUrl = opts.documentUrl;
-    const isLocalhost = opts.documentUrl.includes('localhost') || opts.documentUrl.includes('127.0.0.1');
+    const isLocalhost = opts.documentUrl && (opts.documentUrl.includes('localhost') || opts.documentUrl.includes('127.0.0.1'));
     if (isLocalhost) {
       docUrl = 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf';
       logger.info(`Localhost file not found on disk. Downloading public dummy PDF instead: ${docUrl}`);
+    } else if (docUrl && docUrl.includes('cloudinary.com')) {
+      const parts = docUrl.split('/upload/');
+      if (parts.length >= 2) {
+        const pathParts = parts[1].split('/');
+        // Remove version number (e.g. v1783369415)
+        if (pathParts[0].startsWith('v') && !isNaN(Number(pathParts[0].substring(1)))) {
+          pathParts.shift();
+        }
+        const publicIdWithExt = pathParts.join('/');
+        const publicId = publicIdWithExt.substring(0, publicIdWithExt.lastIndexOf('.'));
+        
+        docUrl = cloudinary.url(publicId, {
+          sign_url: true,
+          secure: true,
+          resource_type: mimeType === 'application/pdf' ? 'image' : 'raw'
+        });
+        logger.info(`Generated signed Cloudinary URL for Meta upload: ${docUrl}`);
+      }
     }
+
     try {
-      const downloadRes = await axios.get(docUrl, { responseType: 'stream' });
+      const downloadRes = await axios.get(encodeURI(docUrl), { responseType: 'stream' });
       stream = downloadRes.data;
     } catch (downloadErr: any) {
       throw new Error(`Failed to retrieve document from storage URL (${docUrl}): ${downloadErr.message}. Ensure your file server or Cloudinary account is active.`);
