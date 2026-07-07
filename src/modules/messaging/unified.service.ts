@@ -187,10 +187,20 @@ async function sendViaMeta(opts: SendMessageOptions, settings: any) {
   logger.info(`Meta media upload success. Media ID: ${mediaId}`);
 
   // 3. Send template message with document id in the header component
+  let cleanTo = String(opts.to || '').replace(/\D/g, '');
+  if (cleanTo.startsWith('00')) {
+    cleanTo = cleanTo.slice(2);
+  } else if (cleanTo.startsWith('0')) {
+    cleanTo = cleanTo.slice(1);
+  }
+  if (cleanTo.length === 10) {
+    cleanTo = '91' + cleanTo;
+  }
+
   const payload = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
-    to: opts.to,
+    to: cleanTo,
     type: 'template',
     template: {
       name: 'etapalwala_template',
