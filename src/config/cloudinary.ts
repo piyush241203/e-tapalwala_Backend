@@ -37,11 +37,10 @@ export async function uploadFileToCloudinary(
     const cleanOriginalName = originalName.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9]/g, '');
     const basePublicId = customPublicId || `${Date.now()}${cleanOriginalName}`;
     
-    const isPdf = ext === '.pdf';
-    const finalPublicId = isPdf ? basePublicId : `${basePublicId}${ext}`;
+    const finalPublicId = `${basePublicId}${ext}`;
 
     const result = await cloudinary.uploader.upload(filePath, {
-      resource_type: isPdf ? 'image' : 'raw',
+      resource_type: 'raw',
       folder: folder,
       public_id: finalPublicId,
       sign_url: true,

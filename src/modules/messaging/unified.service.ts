@@ -6,16 +6,15 @@ import axios from 'axios';
 import FormData from 'form-data';
 import fs from 'fs';
 import path from 'path';
-import { v2 as cloudinary } from 'cloudinary';
 
 export interface SendMessageOptions {
   messageLogId: string;
   to: string;
   channel: Channel;
   provider: Provider;
-  documentUrl?: string;
+  /** Absolute path to the PDF on local disk — used directly for Meta media upload */
+  localFilePath: string;
   documentName?: string;
-  storedName?: string;
   body?: string;
   cityId: string;
   fallbackEnabled?: boolean;
@@ -35,18 +34,30 @@ function mapWhatsAppError(error: any): string {
     const status = error.response.status;
     const data = error.response.data;
 
+    logger.error(`[WhatsApp API Error Response] Status: ${status}, Body: ${JSON.stringify(data)}`);
+
     if (status === 401 || status === 403) {
       return "Invalid WhatsApp API Token or Key Disabled. Please check your configuration.";
     }
 
     if (data && data.error) {
       const code = data.error.code;
-      const message = data.error.message;
+      const message = data.error.message || '';
 
       if (code === 131026) return "Message failed: Phone number is not registered on WhatsApp.";
       if (code === 131021) return "Message failed: Invalid phone number format.";
       if (code === 131047) return "Message failed: Phone number is not a valid WhatsApp number.";
-      if (code === 100) return "Message failed: Invalid parameter (likely phone number).";
+      if (code === 100) {
+        if (
+          message.toLowerCase().includes('sandbox') ||
+          message.toLowerCase().includes('test number') ||
+          message.toLowerCase().includes('allowed list') ||
+          message.toLowerCase().includes('verify')
+        ) {
+          return "Message failed: Recipient number is not verified in sandbox settings. Please verify it in your Meta Developer Console.";
+        }
+        return `Message failed: Invalid parameter - ${message}`;
+      }
       if (code === 131008) return "Message failed: WABA Currency and Payment issue.";
       if (code === 131009) return "Message failed: WABA Payment issue.";
 
@@ -64,7 +75,6 @@ function mapWhatsAppError(error: any): string {
 export async function sendMessage(opts: SendMessageOptions): Promise<void> {
   const settings = await getSettings(opts.cityId);
 
-  // If there are no settings in DB AND no process.env settings, block
   const hasEnvSettings = !!(process.env.META_ACCESS_TOKEN && process.env.META_PHONE_NUMBER_ID);
   if (!settings && !hasEnvSettings) {
     const err = 'No messaging settings configured';
@@ -88,18 +98,28 @@ export async function sendMessage(opts: SendMessageOptions): Promise<void> {
   }
 }
 
-async function uploadMediaToMeta(
-  stream: any,
+/**
+ * Upload a local file stream directly to the Meta media API.
+ * Returns the Meta media ID.
+ */
+async function uploadLocalFileToMeta(
+  localFilePath: string,
   filename: string,
   mimeType: string,
   accessToken: string,
   phoneNumberId: string,
   apiVersion: string
 ): Promise<string> {
+  if (!fs.existsSync(localFilePath)) {
+    throw new Error(`Local file not found at path: ${localFilePath}`);
+  }
+
   const formData = new FormData();
   formData.append('messaging_product', 'whatsapp');
-  formData.append('file', stream, { filename });
+  formData.append('file', fs.createReadStream(localFilePath), { filename, contentType: mimeType });
   formData.append('type', mimeType);
+
+  logger.info(`[WhatsApp] Uploading local file to Meta media API: ${localFilePath}`);
 
   const response = await axios.post(
     `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/media`,
@@ -116,6 +136,7 @@ async function uploadMediaToMeta(
     throw new Error('Meta media upload failed: ' + JSON.stringify(response.data));
   }
 
+  logger.info(`[WhatsApp] Meta media upload success. Media ID: ${response.data.id}`);
   return response.data.id;
 }
 
@@ -124,99 +145,47 @@ async function sendViaMeta(opts: SendMessageOptions, settings: any) {
   const phoneNumberId = process.env.META_PHONE_NUMBER_ID || settings?.metaPhoneNumberId;
   const apiVersion = process.env.META_API_VERSION || settings?.metaApiVersion || 'v19.0';
 
-  logger.info(`[WhatsApp Trace] opts.cityId: ${opts.cityId}`);
+  logger.info(`[WhatsApp Trace] cityId: ${opts.cityId}`);
   logger.info(`[WhatsApp Trace] Settings Scope: ${settings?.scope || 'NONE'}`);
-  logger.info(`[WhatsApp Trace] Env Token: ${process.env.META_ACCESS_TOKEN ? process.env.META_ACCESS_TOKEN.slice(0, 15) : 'UNDEFINED'}...`);
-  logger.info(`[WhatsApp Trace] DB Token: ${settings?.metaAccessToken ? settings.metaAccessToken.slice(0, 15) : 'UNDEFINED'}...`);
   logger.info(`[WhatsApp Trace] Resolved Token: ${accessToken ? accessToken.slice(0, 15) : 'UNDEFINED'}...`);
   logger.info(`[WhatsApp Trace] Resolved Phone ID: ${phoneNumberId}`);
 
   if (!accessToken || !phoneNumberId) {
-    throw new Error('Meta WhatsApp not configured. Please define META_ACCESS_TOKEN and META_PHONE_NUMBER_ID in .env or Super Admin Settings.');
+    throw new Error(
+      'Meta WhatsApp not configured. Please define META_ACCESS_TOKEN and META_PHONE_NUMBER_ID in .env or Super Admin Settings.'
+    );
   }
 
-  if (!opts.documentUrl) {
-    throw new Error('Document URL is required for Meta WhatsApp');
+  if (!opts.localFilePath) {
+    throw new Error('localFilePath is required to send a document via Meta WhatsApp.');
   }
 
-  // 1. Get document stream (from local disk if exists, otherwise download via HTTP)
-  let stream: any;
-  const filename = opts.documentName || 'Notice.pdf';
+  // ── Clean filename
+  const rawFilename = opts.documentName || 'Notice.pdf';
+  const ext = path.extname(rawFilename);
+  const baseName = path.basename(rawFilename, ext);
+  const cleanBaseName = baseName.replace(/[^a-zA-Z0-9_\-]/g, '_');
+  const filename = `${cleanBaseName}${ext}`;
   const mimeType = 'application/pdf';
 
-  // Try checking disk first using storedName if present (avoids downloading from Cloudinary entirely)
-  if (opts.storedName) {
-    const localFilePath = path.join(__dirname, '..', '..', '..', 'uploads', opts.storedName);
-    if (fs.existsSync(localFilePath)) {
-      stream = fs.createReadStream(localFilePath);
-      logger.info(`Resolved document locally on disk using storedName: ${localFilePath}`);
-    }
-  }
-
-  // Parse localhost fallback
-  if (!stream) {
-    const isLocalhost = opts.documentUrl.includes('localhost') || opts.documentUrl.includes('127.0.0.1');
-    if (isLocalhost) {
-      const fileParts = opts.documentUrl.split('/uploads/');
-      const localName = fileParts.pop();
-      const localFilePath = path.join(__dirname, '..', '..', '..', 'uploads', localName || '');
-      if (fs.existsSync(localFilePath)) {
-        stream = fs.createReadStream(localFilePath);
-      }
-    }
-  }
-
-  // Fallback to HTTP download
-  if (!stream) {
-    let docUrl = opts.documentUrl;
-    const isLocalhost = opts.documentUrl && (opts.documentUrl.includes('localhost') || opts.documentUrl.includes('127.0.0.1'));
-    if (isLocalhost) {
-      docUrl = 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf';
-      logger.info(`Localhost file not found on disk. Downloading public dummy PDF instead: ${docUrl}`);
-    } else if (docUrl && docUrl.includes('cloudinary.com')) {
-      const parts = docUrl.split('/upload/');
-      if (parts.length >= 2) {
-        const pathParts = parts[1].split('/');
-        // Remove version number (e.g. v1783369415)
-        if (pathParts[0].startsWith('v') && !isNaN(Number(pathParts[0].substring(1)))) {
-          pathParts.shift();
-        }
-        const publicIdWithExt = pathParts.join('/');
-        const publicId = publicIdWithExt.substring(0, publicIdWithExt.lastIndexOf('.'));
-        
-        docUrl = cloudinary.url(publicId, {
-          sign_url: true,
-          secure: true,
-          resource_type: mimeType === 'application/pdf' ? 'image' : 'raw'
-        });
-        logger.info(`Generated signed Cloudinary URL for Meta upload: ${docUrl}`);
-      }
-    }
-
-    try {
-      const downloadRes = await axios.get(encodeURI(docUrl), { responseType: 'stream' });
-      stream = downloadRes.data;
-    } catch (downloadErr: any) {
-      throw new Error(`Failed to retrieve document from storage URL (${docUrl}): ${downloadErr.message}. Ensure your file server or Cloudinary account is active.`);
-    }
-  }
-
-  // 2. Upload to Meta media API
-  logger.info(`Uploading document stream to Meta...`);
-  const mediaId = await uploadMediaToMeta(stream, filename, mimeType, accessToken, phoneNumberId, apiVersion);
-  logger.info(`Meta media upload success. Media ID: ${mediaId}`);
-
-  // 3. Send template message with document id in the header component
+  // ── Normalize phone number (strip non-digits, ensure country code)
   let cleanTo = String(opts.to || '').replace(/\D/g, '');
-  if (cleanTo.startsWith('00')) {
-    cleanTo = cleanTo.slice(2);
-  } else if (cleanTo.startsWith('0')) {
-    cleanTo = cleanTo.slice(1);
-  }
-  if (cleanTo.length === 10) {
-    cleanTo = '91' + cleanTo;
-  }
+  if (cleanTo.startsWith('00')) cleanTo = cleanTo.slice(2);
+  else if (cleanTo.startsWith('0')) cleanTo = cleanTo.slice(1);
+  if (cleanTo.length === 10) cleanTo = '91' + cleanTo;
+  logger.info(`[WhatsApp] Sending to: ${cleanTo}`);
 
+  // ── STEP 1: Upload local disk file directly to Meta media API
+  const mediaId = await uploadLocalFileToMeta(
+    opts.localFilePath,
+    filename,
+    mimeType,
+    accessToken,
+    phoneNumberId,
+    apiVersion
+  );
+
+  // ── STEP 2: Send template message with mediaId in header
   const payload = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
@@ -233,14 +202,16 @@ async function sendViaMeta(opts: SendMessageOptions, settings: any) {
               type: 'document',
               document: {
                 id: mediaId,
-                filename: filename
-              }
-            }
-          ]
-        }
-      ]
-    }
+                filename,
+              },
+            },
+          ],
+        },
+      ],
+    },
   };
+
+  logger.info(`[WhatsApp] Sending template to ${cleanTo} with media ID: ${mediaId}`);
 
   const res = await axios.post(
     `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`,
@@ -271,7 +242,7 @@ async function sendViaMeta(opts: SendMessageOptions, settings: any) {
     },
   });
 
-  logger.info(`Meta WhatsApp Template sent successfully: ${message.id}`);
+  logger.info(`[WhatsApp] ✅ Template message sent! Message ID: ${message.id}`);
 }
 
 async function updateStatus(messageLogId: string, status: any, error?: string) {
@@ -280,7 +251,6 @@ async function updateStatus(messageLogId: string, status: any, error?: string) {
     data: {
       status,
       ...(error ? { error } : {}),
-      ...(status === 'FAILED' ? {} : {}),
     },
   });
 }
@@ -294,4 +264,3 @@ export function normalizeMetaStatus(metaStatus: string): string {
   };
   return map[metaStatus] || 'SENT';
 }
-

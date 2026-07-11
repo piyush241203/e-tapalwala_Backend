@@ -121,6 +121,11 @@ export const createTapal = async (req: AuthRequest, res: Response, next: NextFun
       return;
     }
 
+    if (file.size === 0) {
+      res.status(400).json({ error: 'Uploaded PDF file is empty (0 bytes). Please upload a valid PDF.' });
+      return;
+    }
+
     const body = createTapalSchema.parse(req.body);
 
     let cityId = user.cityId;

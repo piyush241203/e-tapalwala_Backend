@@ -33,6 +33,7 @@ webhookRouter.post('/meta', async (req: Request, res: Response) => {
           status: normalizedStatus as any,
           ...(normalizedStatus === 'DELIVERED' ? { deliveredAt: new Date() } : {}),
           ...(normalizedStatus === 'READ' ? { readAt: new Date() } : {}),
+          ...(statusUpdate.error ? { error: statusUpdate.error } : {}),
         },
       });
 

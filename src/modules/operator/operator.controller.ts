@@ -160,6 +160,11 @@ export const sendSingle = async (req: AuthRequest, res: Response, next: NextFunc
       return;
     }
 
+    if (file.size === 0) {
+      res.status(400).json({ error: 'Uploaded PDF file is empty (0 bytes). Please upload a valid PDF.' });
+      return;
+    }
+
     const body = singleSendSchema.parse(req.body);
 
     // Validate Office & Credits
@@ -190,21 +195,21 @@ export const sendSingle = async (req: AuthRequest, res: Response, next: NextFunc
       }
     }
 
-    // Upload PDF to Cloudinary
+    // ── Cloudinary folder/ID config (upload happens in background after send)
     const cityName = city.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
     const officeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]+/g, '_') : 'general';
     const folderPath = `etapalwala_files/${cityName}/${officeName}/pdfs`;
     const cleanOfficeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]/g, '') : 'general';
     const datetimeStr = new Date().toISOString().replace(/[^0-9]/g, '');
     const customPublicId = `${cleanOfficeName}${datetimeStr}`;
-    const cloudinaryUrl = await uploadFileToCloudinary(file.path, file.originalname, folderPath, customPublicId);
 
-    // Create document record
+    // ── Create document record immediately (fileUrl will be updated with Cloudinary URL once uploaded)
+    const localFileUrl = `${process.env.API_URL || 'http://localhost:4000'}/uploads/${file.filename}`;
     const document = await prisma.document.create({
       data: {
         originalName: file.originalname,
         storedName: file.filename,
-        fileUrl: cloudinaryUrl,
+        fileUrl: localFileUrl,
         fileSize: BigInt(file.size),
         mimeType: file.mimetype,
         uploadedById: operatorId,
@@ -215,7 +220,7 @@ export const sendSingle = async (req: AuthRequest, res: Response, next: NextFunc
       } satisfies Prisma.DocumentUncheckedCreateInput,
     });
 
-    // Find or create a recipient record for this mobile
+    // ── Find or create recipient
     let recipient = await prisma.recipient.findFirst({
       where: { mobile: body.recipientMobile, cityId, operatorId },
     });
@@ -231,7 +236,7 @@ export const sendSingle = async (req: AuthRequest, res: Response, next: NextFunc
       });
     }
 
-    // Create message log
+    // ── Create message log
     const messageLog = await prisma.messageLog.create({
       data: {
         recipientId: recipient.id,
@@ -246,24 +251,35 @@ export const sendSingle = async (req: AuthRequest, res: Response, next: NextFunc
       } satisfies Prisma.MessageLogUncheckedCreateInput,
     });
 
-    // Send synchronously to return immediate results
+    // ── PARALLEL: Send to Meta from local disk  +  Upload to Cloudinary (side path)
+    // Meta send uses the local file directly — no Cloudinary in the sending path.
+    // Cloudinary upload runs alongside and updates the document record for log viewing.
+    const cloudinaryUploadPromise = uploadFileToCloudinary(file.path, file.originalname, folderPath, customPublicId)
+      .then(cloudinaryUrl => {
+        return prisma.document.update({
+          where: { id: document.id },
+          data: { fileUrl: cloudinaryUrl },
+        });
+      })
+      .catch(err => {
+        logger.error(`[Cloudinary] Background upload failed for document ${document.id}:`, err);
+      });
+
     try {
+      // MAIN PATH: Stream local file → Meta media API → WhatsApp
       await sendMessage({
         messageLogId: messageLog.id,
         to: body.recipientMobile,
         channel: body.channel as Channel,
         provider: body.provider as Provider,
-        documentUrl: document.fileUrl,
-        documentName: document.originalName,
-        storedName: document.storedName,
+        localFilePath: file.path,
+        documentName: file.originalname,
         body: body.body,
         cityId,
         fallbackEnabled: body.fallbackEnabled,
       });
 
-      const updatedLog = await prisma.messageLog.findUnique({
-        where: { id: messageLog.id },
-      });
+      const updatedLog = await prisma.messageLog.findUnique({ where: { id: messageLog.id } });
 
       if (updatedLog?.status === 'FAILED') {
         res.status(400).json({ error: updatedLog.error || 'Message delivery failed' });
@@ -289,6 +305,9 @@ export const sendSingle = async (req: AuthRequest, res: Response, next: NextFunc
     } catch (sendErr: any) {
       res.status(400).json({ error: sendErr.message || 'Message delivery failed' });
     }
+
+    // Ensure Cloudinary upload finishes (it continues even after response is sent)
+    cloudinaryUploadPromise.catch(() => {});
   } catch (err) {
     next(err);
   }
@@ -308,8 +327,17 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
       res.status(400).json({ error: 'PDF file is required' });
       return;
     }
+    if (pdfFile.size === 0) {
+      res.status(400).json({ error: 'Uploaded PDF file is empty (0 bytes). Please upload a valid PDF.' });
+      return;
+    }
+
     if (!csvFile) {
       res.status(400).json({ error: 'CSV file is required' });
+      return;
+    }
+    if (csvFile.size === 0) {
+      res.status(400).json({ error: 'Uploaded CSV file is empty (0 bytes). Please upload a valid CSV.' });
       return;
     }
 
@@ -360,26 +388,23 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
       }
     }
 
-    // Upload PDF and CSV to Cloudinary
+    // ── Cloudinary folder/ID config
     const cityName = city.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
     const officeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]+/g, '_') : 'general';
     const pdfFolder = `etapalwala_files/${cityName}/${officeName}/pdfs`;
     const csvFolder = `etapalwala_files/${cityName}/${officeName}/csvs`;
-
     const cleanOfficeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]/g, '') : 'general';
     const datetimeStr = new Date().toISOString().replace(/[^0-9]/g, '');
     const customPdfId = `${cleanOfficeName}pdf${datetimeStr}`;
     const customCsvId = `${cleanOfficeName}csv${datetimeStr}`;
 
-    const cloudinaryUrl = await uploadFileToCloudinary(pdfFile.path, pdfFile.originalname, pdfFolder, customPdfId);
-    const csvCloudinaryUrl = await uploadFileToCloudinary(csvFile.path, csvFile.originalname, csvFolder, customCsvId);
-
-    // Create document record
+    // ── Create document record immediately (fileUrl updated with Cloudinary URL in background)
+    const localPdfUrl = `${process.env.API_URL || 'http://localhost:4000'}/uploads/${pdfFile.filename}`;
     const document = await prisma.document.create({
       data: {
         originalName: pdfFile.originalname,
         storedName: pdfFile.filename,
-        fileUrl: cloudinaryUrl,
+        fileUrl: localPdfUrl,
         fileSize: BigInt(pdfFile.size),
         mimeType: pdfFile.mimetype,
         uploadedById: operatorId,
@@ -389,14 +414,14 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
       } satisfies Prisma.DocumentUncheckedCreateInput,
     });
 
-    // Create bulk operation
+    // ── Create bulk operation (csvFileUrl updated with Cloudinary URL in background)
     const bulkOp = await prisma.bulkOperation.create({
       data: {
         name: body.name,
         cityId,
         operatorId,
         documentId: document.id,
-        csvFileUrl: csvCloudinaryUrl,
+        csvFileUrl: '',
         channel: body.channel as Channel,
         provider: body.provider as Provider,
         totalRecipients: recipients.length,
@@ -406,7 +431,17 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
       } satisfies Prisma.BulkOperationUncheckedCreateInput,
     });
 
-    // Bulk-create recipients
+    // ── SIDE PATH: Upload both files to Cloudinary in background, update records when done
+    const cloudinaryUploadsPromise = Promise.all([
+      uploadFileToCloudinary(pdfFile.path, pdfFile.originalname, pdfFolder, customPdfId)
+        .then(url => prisma.document.update({ where: { id: document.id }, data: { fileUrl: url } }))
+        .catch(err => logger.error(`[Cloudinary] PDF upload failed for doc ${document.id}:`, err)),
+      uploadFileToCloudinary(csvFile.path, csvFile.originalname, csvFolder, customCsvId)
+        .then(url => prisma.bulkOperation.update({ where: { id: bulkOp.id }, data: { csvFileUrl: url } }))
+        .catch(err => logger.error(`[Cloudinary] CSV upload failed for bulkOp ${bulkOp.id}:`, err)),
+    ]);
+
+    // ── Bulk-create recipients
     await prisma.recipient.createMany({
       data: recipients.map(r => ({
         mobile: r.mobile,
@@ -423,7 +458,7 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
       select: { id: true, mobile: true },
     });
 
-    // Create all message logs
+    // ── Create all message logs
     const messageLogsData = createdRecipients.map(r => ({
       recipientId: r.id,
       cityId,
@@ -439,13 +474,12 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
 
     await prisma.messageLog.createMany({ data: messageLogsData });
 
-    // Fetch created logs to process
     const createdLogs = await prisma.messageLog.findMany({
       where: { bulkOperationId: bulkOp.id },
       select: { id: true, recipientMobile: true },
     });
 
-    // Process in background
+    // ── MAIN PATH: Process all sends in background using local disk file directly
     setImmediate(async () => {
       await prisma.bulkOperation.update({
         where: { id: bulkOp.id },
@@ -457,14 +491,14 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
 
       for (const log of createdLogs) {
         try {
+          // MAIN PATH: Stream from local disk → Meta media API → WhatsApp
           await sendMessage({
             messageLogId: log.id,
             to: log.recipientMobile,
             channel: body.channel,
             provider: body.provider,
-            documentUrl: document.fileUrl,
-            documentName: document.originalName,
-            storedName: document.storedName,
+            localFilePath: pdfFile.path,
+            documentName: pdfFile.originalname,
             body: body.body,
             cityId,
             fallbackEnabled: body.fallbackEnabled,
@@ -475,7 +509,7 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
           logger.error(`Bulk send failed for ${log.recipientMobile}:`, err);
         }
 
-        // Small delay to avoid rate limits
+        // Small delay to avoid Meta rate limits
         await new Promise(r => setTimeout(r, 200));
       }
 
@@ -489,6 +523,9 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
         },
       });
     });
+
+    // Don't block response on Cloudinary
+    cloudinaryUploadsPromise.catch(() => {});
 
     await auditLog({
       actorId: operatorId,
@@ -674,12 +711,24 @@ export const retryMessage = async (req: AuthRequest, res: Response, next: NextFu
       data: { status: MessageStatus.RETRYING, retryCount: { increment: 1 }, lastRetryAt: new Date() },
     });
 
+    // For retry: check if file still exists on disk via storedName, else use fileUrl (Cloudinary)
+    const storedName = log.document?.storedName;
+    const localPath = storedName
+      ? path.join(__dirname, '..', '..', 'uploads', storedName)
+      : null;
+    const fileExists = localPath && fs.existsSync(localPath);
+
+    if (!fileExists) {
+      res.status(400).json({ error: 'Original file is no longer available on disk. Cannot retry.' });
+      return;
+    }
+
     sendMessage({
       messageLogId: id,
       to: log.recipientMobile,
       channel: log.channel,
       provider: log.provider,
-      documentUrl: log.document?.fileUrl,
+      localFilePath: localPath!,
       documentName: log.document?.originalName,
       body: log.body || undefined,
       cityId,

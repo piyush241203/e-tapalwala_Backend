@@ -129,6 +129,7 @@ export class MetaWhatsAppService {
     status: string;
     timestamp: string;
     to: string;
+    error?: string;
   } | null {
     try {
       const entry = body?.entry?.[0];
@@ -138,11 +139,25 @@ export class MetaWhatsAppService {
 
       if (!statuses) return null;
 
+      let errorMsg: string | undefined;
+      if (statuses.errors && statuses.errors.length > 0) {
+        const errObj = statuses.errors[0];
+        errorMsg = `Webhook error (${errObj.code}): ${errObj.message || errObj.title}`;
+        
+        // Map standard sandbox verification errors
+        if (errObj.code === 131047) {
+          errorMsg = "Sandbox limit: Recipient number is not verified in sandbox settings.";
+        } else if (errObj.code === 131026) {
+          errorMsg = "Recipient number is not registered on WhatsApp.";
+        }
+      }
+
       return {
         messageId: statuses.id,
         status: statuses.status,
         timestamp: statuses.timestamp,
         to: statuses.recipient_id,
+        error: errorMsg,
       };
     } catch {
       return null;
