@@ -711,11 +711,10 @@ export const retryMessage = async (req: AuthRequest, res: Response, next: NextFu
       data: { status: MessageStatus.RETRYING, retryCount: { increment: 1 }, lastRetryAt: new Date() },
     });
 
-    // For retry: check if file still exists on disk via storedName, else use fileUrl (Cloudinary)
+    // For retry: check if file still exists on disk via storedName
     const storedName = log.document?.storedName;
-    const localPath = storedName
-      ? path.join(__dirname, '..', '..', 'uploads', storedName)
-      : null;
+    const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, '..', '..', 'uploads');
+    const localPath = storedName ? path.join(uploadDir, storedName) : null;
     const fileExists = localPath && fs.existsSync(localPath);
 
     if (!fileExists) {

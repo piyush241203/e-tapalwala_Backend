@@ -64,7 +64,11 @@ app.use(morgan('combined', {
 }));
 
 // ─── Static Files ────────────────────────────────────────────────────────────
-app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, '..', 'uploads');
+if (!require('fs').existsSync(UPLOAD_DIR)) {
+  require('fs').mkdirSync(UPLOAD_DIR, { recursive: true });
+}
+app.use('/uploads', express.static(UPLOAD_DIR));
 
 // ─── Health Check ────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => {
