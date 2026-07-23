@@ -5,8 +5,13 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+<<<<<<< HEAD
     "build": "prisma generate --schema=src/prisma/schema.prisma && tsc",
     "start": "node dist/index.js",
+=======
+    "build": "tsc",
+    "start": "node dist/index.ts",
+>>>>>>> 4e7309612db4961c05b7f283a5336fae8f0c6241
     "prisma:generate": "prisma generate --schema=src/prisma/schema.prisma",
     "prisma:migrate": "prisma migrate dev --schema=src/prisma/schema.prisma",
     "prisma:migrate:deploy": "prisma migrate deploy --schema=src/prisma/schema.prisma",
