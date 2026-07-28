@@ -23,11 +23,13 @@ services:
         sync: false
       - key: META_VERIFY_TOKEN
         sync: false
-      - key: CLOUDINARY_CLOUD_NAME
+      - key: R2_ACCOUNT_ID
         sync: false
-      - key: CLOUDINARY_API_KEY
+      - key: R2_ACCESS_KEY_ID
         sync: false
-      - key: CLOUDINARY_API_SECRET
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
         sync: false
       - key: ALLOWED_ORIGINS
         sync: false

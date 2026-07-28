@@ -8,9 +8,13 @@ import {
   forwardTapal,
   resolveTapal,
   returnTapal,
+  viewTapalAttachment,
 } from './tapal.controller';
 
 export const tapalRouter = Router();
+
+// Public route to view tapal attachment inline in the browser
+tapalRouter.get('/:id/view', viewTapalAttachment);
 
 tapalRouter.use(authenticate);
 

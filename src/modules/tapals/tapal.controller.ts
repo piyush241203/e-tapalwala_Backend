@@ -1,9 +1,21 @@
 import { Response, NextFunction } from 'express';
 import { prisma } from '../../config/database';
 import { AuthRequest } from '../../middlewares/auth.middleware';
-import { uploadFileToCloudinary } from '../../config/cloudinary';
+import { uploadFileToR2, r2Client } from '../../config/r2';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { Role, TapalType, TapalStatus } from '@prisma/client';
 import { z } from 'zod';
+import path from 'path';
+import fs from 'fs';
+import { logger } from '../../config/logger';
+
+const transformTapal = (tapal: any) => {
+  if (tapal && tapal.fileAttachment && tapal.fileAttachment.storageKey) {
+    const apiUrl = process.env.API_URL || 'http://localhost:4000';
+    tapal.fileAttachment.storageKey = `${apiUrl}/tapals/${tapal.id}/view`;
+  }
+  return tapal;
+};
 
 const createTapalSchema = z.object({
   type: z.enum(['Inward', 'Outward', 'Internal']),
@@ -68,7 +80,7 @@ export const getTapals = async (req: AuthRequest, res: Response, next: NextFunct
       orderBy: { createdAt: 'desc' },
     });
 
-    res.json(tapals);
+    res.json(tapals.map(transformTapal));
   } catch (err) {
     next(err);
   }
@@ -105,7 +117,7 @@ export const getTapalById = async (req: AuthRequest, res: Response, next: NextFu
       return;
     }
 
-    res.json(tapal);
+    res.json(transformTapal(tapal));
   } catch (err) {
     next(err);
   }
@@ -151,11 +163,11 @@ export const createTapal = async (req: AuthRequest, res: Response, next: NextFun
     const officeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]+/g, '_') : 'general';
     const folderPath = `etapalwala_files/${cityName}/${officeName}/pdfs`;
 
-    // Upload to Cloudinary
+    // Upload to Cloudflare R2
     const cleanOfficeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]/g, '') : 'general';
     const datetimeStr = new Date().toISOString().replace(/[^0-9]/g, '');
     const customPublicId = `${cleanOfficeName}tapal${datetimeStr}`;
-    const cloudinaryUrl = await uploadFileToCloudinary(file.path, file.originalname, folderPath, customPublicId);
+    const r2Url = await uploadFileToR2(file.path, file.originalname, folderPath, customPublicId);
 
     // Generate unique tracking number
     const count = await prisma.tapal.count({ where: { cityId, officeId } });
@@ -179,14 +191,14 @@ export const createTapal = async (req: AuthRequest, res: Response, next: NextFun
           receivedDate: body.receivedDate ? new Date(body.receivedDate) : null,
         },
         fileAttachment: {
-          storageKey: cloudinaryUrl,
+          storageKey: r2Url,
           originalFilename: file.originalname,
           fileSizeBytes: file.size,
         },
       },
     });
 
-    res.status(201).json(tapal);
+    res.status(201).json(transformTapal(tapal));
   } catch (err) {
     next(err);
   }
@@ -346,6 +358,86 @@ export const returnTapal = async (req: AuthRequest, res: Response, next: NextFun
     });
 
     res.json(updatedTapal);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const viewTapalAttachment = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { id } = req.params;
+
+    const tapal = await prisma.tapal.findUnique({
+      where: { id },
+    });
+
+    if (!tapal || !tapal.fileAttachment || !tapal.fileAttachment.storageKey) {
+      res.status(404).json({ error: 'Attachment not found' });
+      return;
+    }
+
+    const { storageKey, originalFilename } = tapal.fileAttachment;
+    const filename = originalFilename || 'document.pdf';
+
+    logger.info(`viewTapalAttachment: id=${id}, storageKey=${storageKey}`);
+
+    // If local file path
+    const isLocalUrl = !storageKey.startsWith('http') || storageKey.includes('localhost') || storageKey.includes('127.0.0.1');
+    if (isLocalUrl) {
+      const filenamePart = storageKey.split(/[\\/]/).pop() || '';
+      const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, '..', '..', '..', 'uploads');
+      const localFilePath = path.join(uploadDir, filenamePart);
+      if (fs.existsSync(localFilePath)) {
+        const disposition = req.query.download === 'true' ? 'attachment' : 'inline';
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(filename)}"`);
+        fs.createReadStream(localFilePath).pipe(res);
+        return;
+      }
+    }
+
+    // Remote file path (R2 or generic S3 URL)
+    const disposition = req.query.download === 'true' ? 'attachment' : 'inline';
+    try {
+      if (storageKey.includes('.r2.cloudflarestorage.com')) {
+        const urlObj = new URL(storageKey);
+        const bucketName = process.env.R2_BUCKET_NAME || urlObj.hostname.split('.')[0];
+        const key = decodeURIComponent(urlObj.pathname.substring(1));
+
+        logger.info(`viewTapalAttachment: Streaming from Cloudflare R2. Bucket: ${bucketName}, Key: ${key}`);
+
+        const command = new GetObjectCommand({
+          Bucket: bucketName,
+          Key: key,
+        });
+        const r2Response = await r2Client.send(command);
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(filename)}"`);
+
+        (r2Response.Body as any).pipe(res);
+        return;
+      }
+
+      // Generic URL fallback (e.g. old Cloudinary URLs)
+      logger.info(`viewTapalAttachment: Streaming generic remote URL: ${storageKey}`);
+      const axios = require('axios');
+      const response = await axios({
+        method: 'get',
+        url: encodeURI(storageKey),
+        responseType: 'stream',
+        timeout: 15000
+      });
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(filename)}"`);
+      response.data.pipe(res);
+      return;
+    } catch (streamErr: any) {
+      logger.error(`Failed to proxy stream tapal attachment. URL attempted: ${storageKey}. Error: ${streamErr.message}`, streamErr);
+    }
+
+    res.status(404).json({ error: 'File not found on disk and remote proxy streaming failed.' });
   } catch (err) {
     next(err);
   }

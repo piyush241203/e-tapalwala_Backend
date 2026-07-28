@@ -9,8 +9,8 @@ import { sendMessage } from '../messaging/unified.service';
 import { auditLog } from '../audit/audit.service';
 import { singleSendSchema, bulkSendSchema } from './operator.schema';
 import { logger } from '../../config/logger';
-import { uploadFileToCloudinary } from '../../config/cloudinary';
-import { v2 as cloudinary } from 'cloudinary';
+import { uploadFileToR2, r2Client } from '../../config/r2';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
 import {
   Prisma,
   Channel,
@@ -251,18 +251,18 @@ export const sendSingle = async (req: AuthRequest, res: Response, next: NextFunc
       } satisfies Prisma.MessageLogUncheckedCreateInput,
     });
 
-    // ── PARALLEL: Send to Meta from local disk  +  Upload to Cloudinary (side path)
-    // Meta send uses the local file directly — no Cloudinary in the sending path.
-    // Cloudinary upload runs alongside and updates the document record for log viewing.
-    const cloudinaryUploadPromise = uploadFileToCloudinary(file.path, file.originalname, folderPath, customPublicId)
-      .then(cloudinaryUrl => {
+    // ── PARALLEL: Send to Meta from local disk  +  Upload to Cloudflare R2 (side path)
+    // Meta send uses the local file directly — no Cloudflare R2 in the sending path.
+    // Cloudflare R2 upload runs alongside and updates the document record for log viewing.
+    const r2UploadPromise = uploadFileToR2(file.path, file.originalname, folderPath, customPublicId)
+      .then(r2Url => {
         return prisma.document.update({
           where: { id: document.id },
-          data: { fileUrl: cloudinaryUrl },
+          data: { fileUrl: r2Url },
         });
       })
       .catch(err => {
-        logger.error(`[Cloudinary] Background upload failed for document ${document.id}:`, err);
+        logger.error(`[R2] Background upload failed for document ${document.id}:`, err);
       });
 
     try {
@@ -306,8 +306,8 @@ export const sendSingle = async (req: AuthRequest, res: Response, next: NextFunc
       res.status(400).json({ error: sendErr.message || 'Message delivery failed' });
     }
 
-    // Ensure Cloudinary upload finishes (it continues even after response is sent)
-    cloudinaryUploadPromise.catch(() => {});
+    // Ensure R2 upload finishes (it continues even after response is sent)
+    r2UploadPromise.catch(() => {});
   } catch (err) {
     next(err);
   }
@@ -388,7 +388,7 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
       }
     }
 
-    // ── Cloudinary folder/ID config
+    // ── Cloudflare R2 folder/ID config
     const cityName = city.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
     const officeName = office ? office.name.toLowerCase().replace(/[^a-z0-9]+/g, '_') : 'general';
     const pdfFolder = `etapalwala_files/${cityName}/${officeName}/pdfs`;
@@ -398,7 +398,7 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
     const customPdfId = `${cleanOfficeName}pdf${datetimeStr}`;
     const customCsvId = `${cleanOfficeName}csv${datetimeStr}`;
 
-    // ── Create document record immediately (fileUrl updated with Cloudinary URL in background)
+    // ── Create document record immediately (fileUrl updated with Cloudflare R2 URL in background)
     const localPdfUrl = `${process.env.API_URL || 'http://localhost:4000'}/uploads/${pdfFile.filename}`;
     const document = await prisma.document.create({
       data: {
@@ -414,7 +414,7 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
       } satisfies Prisma.DocumentUncheckedCreateInput,
     });
 
-    // ── Create bulk operation (csvFileUrl updated with Cloudinary URL in background)
+    // ── Create bulk operation (csvFileUrl updated with Cloudflare R2 URL in background)
     const bulkOp = await prisma.bulkOperation.create({
       data: {
         name: body.name,
@@ -431,14 +431,14 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
       } satisfies Prisma.BulkOperationUncheckedCreateInput,
     });
 
-    // ── SIDE PATH: Upload both files to Cloudinary in background, update records when done
-    const cloudinaryUploadsPromise = Promise.all([
-      uploadFileToCloudinary(pdfFile.path, pdfFile.originalname, pdfFolder, customPdfId)
+    // ── SIDE PATH: Upload both files to Cloudflare R2 in background, update records when done
+    const r2UploadsPromise = Promise.all([
+      uploadFileToR2(pdfFile.path, pdfFile.originalname, pdfFolder, customPdfId)
         .then(url => prisma.document.update({ where: { id: document.id }, data: { fileUrl: url } }))
-        .catch(err => logger.error(`[Cloudinary] PDF upload failed for doc ${document.id}:`, err)),
-      uploadFileToCloudinary(csvFile.path, csvFile.originalname, csvFolder, customCsvId)
+        .catch(err => logger.error(`[R2] PDF upload failed for doc ${document.id}:`, err)),
+      uploadFileToR2(csvFile.path, csvFile.originalname, csvFolder, customCsvId)
         .then(url => prisma.bulkOperation.update({ where: { id: bulkOp.id }, data: { csvFileUrl: url } }))
-        .catch(err => logger.error(`[Cloudinary] CSV upload failed for bulkOp ${bulkOp.id}:`, err)),
+        .catch(err => logger.error(`[R2] CSV upload failed for bulkOp ${bulkOp.id}:`, err)),
     ]);
 
     // ── Bulk-create recipients
@@ -524,8 +524,8 @@ export const sendBulk = async (req: AuthRequest, res: Response, next: NextFuncti
       });
     });
 
-    // Don't block response on Cloudinary
-    cloudinaryUploadsPromise.catch(() => {});
+    // Don't block response on Cloudflare R2
+    r2UploadsPromise.catch(() => {});
 
     await auditLog({
       actorId: operatorId,
@@ -815,16 +815,18 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
 
     // ── 1. If it's a local file and exists on disk, serve it directly ────────
     if (document.storedName) {
-      const localFilePath = path.join(__dirname, '..', '..', '..', 'uploads', document.storedName);
+      const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, '..', '..', '..', 'uploads');
+      const localFilePath = path.join(uploadDir, document.storedName);
       if (fs.existsSync(localFilePath)) {
+        const disposition = req.query.download === 'true' ? 'attachment' : 'inline';
         res.setHeader('Content-Type', document.mimeType || 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(document.originalName)}"`);
+        res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(document.originalName)}"`);
         fs.createReadStream(localFilePath).pipe(res);
         return;
       }
     }
 
-    // ── 2. If it's a remote URL (like Cloudinary), stream it inline
+    // ── 2. If it's a remote URL (like Cloudflare R2), stream it inline / download
     const currentHost = process.env.API_URL || 'http://localhost:4000';
     const isRemoteUrl = document.fileUrl && 
                         document.fileUrl.startsWith('http') && 
@@ -833,30 +835,31 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
                         !document.fileUrl.includes(currentHost.replace(/^https?:\/\//, ''));
 
     if (isRemoteUrl) {
-      let downloadUrl = document.fileUrl;
+      const disposition = req.query.download === 'true' ? 'attachment' : 'inline';
       try {
-        // If it is a Cloudinary URL, generate a signed URL to bypass "untrusted customer" security blocks
-        if (document.fileUrl.includes('cloudinary.com')) {
-          const parts = document.fileUrl.split('/upload/');
-          if (parts.length >= 2) {
-            const pathParts = parts[1].split('/');
-            // Remove version number (e.g. v1783369415)
-            if (pathParts[0].startsWith('v') && !isNaN(Number(pathParts[0].substring(1)))) {
-              pathParts.shift();
-            }
-            const publicIdWithExt = pathParts.join('/');
-            const publicId = publicIdWithExt.substring(0, publicIdWithExt.lastIndexOf('.'));
-            
-            downloadUrl = cloudinary.url(publicId, {
-              sign_url: true,
-              secure: true,
-              resource_type: document.mimeType === 'application/pdf' ? 'image' : 'raw'
-            });
-          }
+        if (document.fileUrl.includes('.r2.cloudflarestorage.com')) {
+          const urlObj = new URL(document.fileUrl);
+          const bucketName = process.env.R2_BUCKET_NAME || urlObj.hostname.split('.')[0];
+          const key = decodeURIComponent(urlObj.pathname.substring(1));
+
+          logger.info(`viewDocument: Streaming from Cloudflare R2. Bucket: ${bucketName}, Key: ${key}`);
+
+          const command = new GetObjectCommand({
+            Bucket: bucketName,
+            Key: key,
+          });
+          const r2Response = await r2Client.send(command);
+
+          res.setHeader('Content-Type', document.mimeType || 'application/pdf');
+          res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(document.originalName)}"`);
+          
+          (r2Response.Body as any).pipe(res);
+          return;
         }
 
-        logger.info(`viewDocument: Streaming from remote URL: ${downloadUrl}`);
-        const encodedUrl = encodeURI(downloadUrl);
+        // Generic remote URL fallback (e.g. old Cloudinary files or other fallbacks)
+        logger.info(`viewDocument: Streaming from generic remote URL: ${document.fileUrl}`);
+        const encodedUrl = encodeURI(document.fileUrl);
         const response = await axios({
           method: 'get',
           url: encodedUrl,
@@ -865,11 +868,11 @@ export const viewDocument = async (req: any, res: Response, next: NextFunction):
         });
         
         res.setHeader('Content-Type', document.mimeType || 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(document.originalName)}"`);
+        res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(document.originalName)}"`);
         response.data.pipe(res);
         return;
       } catch (streamErr: any) {
-        logger.error(`Failed to proxy stream remote document URL. URL attempted: ${downloadUrl}. Error: ${streamErr.message}`, streamErr);
+        logger.error(`Failed to proxy stream remote document URL. URL attempted: ${document.fileUrl}. Error: ${streamErr.message}`, streamErr);
       }
     }
 
