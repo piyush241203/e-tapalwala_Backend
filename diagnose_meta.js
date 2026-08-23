@@ -10,7 +10,7 @@ function sendTemplate(to) {
       to: to,
       type: "template",
       template: {
-        name: "etapalwala_template",
+        name: "etapalwala_update", // Template ID: 1419599073102113 | Category: Utility | Status: Approved
         language: { code: "en_US" },
         components: [{
           type: "header",

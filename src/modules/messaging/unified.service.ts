@@ -144,6 +144,7 @@ async function sendViaMeta(opts: SendMessageOptions, settings: any) {
   const accessToken = process.env.META_ACCESS_TOKEN || settings?.metaAccessToken;
   const phoneNumberId = process.env.META_PHONE_NUMBER_ID || settings?.metaPhoneNumberId;
   const apiVersion = process.env.META_API_VERSION || settings?.metaApiVersion || 'v19.0';
+  const templateName = process.env.META_TEMPLATE_NAME || 'etapalwala_update';
 
   logger.info(`[WhatsApp Trace] cityId: ${opts.cityId}`);
   logger.info(`[WhatsApp Trace] Settings Scope: ${settings?.scope || 'NONE'}`);
@@ -186,13 +187,14 @@ async function sendViaMeta(opts: SendMessageOptions, settings: any) {
   );
 
   // ── STEP 2: Send template message with mediaId in header
+  // Template: etapalwala_update | ID: 1419599073102113 | Category: Utility | Language: en_US
   const payload = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
     to: cleanTo,
     type: 'template',
     template: {
-      name: 'etapalwala_template',
+      name: templateName,
       language: { code: 'en_US' },
       components: [
         {
